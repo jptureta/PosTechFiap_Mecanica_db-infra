@@ -1,92 +1,92 @@
-# Repositório de Infraestrutura do Banco de Dados
+# Oficina Mecânica | Infraestrutura do banco
 
-Este repositório é responsável pela infraestrutura do banco de dados da aplicação Oficina Mecânica.
+Infraestrutura Terraform responsável pelo PostgreSQL utilizado pela aplicação Oficina Mecânica.
 
-## Objetivo
+## Visão geral
 
-- provisionar o banco de dados em ambiente controlado
-- separar usuários, permissões e credenciais do restante da solução
-- permitir deploy independente por ambiente
-- minimizar riscos de infraestrutura e facilitar governança de dados
+| Item | Informação |
+| --- | --- |
+| Responsabilidade | Provisionamento, acesso e governança do PostgreSQL |
+| IaC | Terraform |
+| Plataforma | AWS |
+| Ambientes | `homologacao` e `production` |
+| Pipeline | [GitHub Actions](.github/workflows/ci-cd.yml) |
+| Estado operacional | Operacional quando o Terraform apply concluir e o banco aceitar conexões |
 
-## Stack principal
+## Arquitetura geral
 
-- Terraform
+```mermaid
+flowchart LR
+    Pipeline[GitHub Actions / Terraform] --> DB[(PostgreSQL)]
+    DB --> Access[Usuários, permissões e secrets]
+    App[Aplicação Kubernetes] -->|DATABASE_URL| DB
+    DB --> Monitor[Datadog PostgreSQL monitor]
+```
+
+## Stack e componentes
+
+- Terraform 1.8.5
 - AWS
 - PostgreSQL
 - GitHub Actions
+- Datadog para disponibilidade, conexões, latência e espaço
 
-## Recursos provisionados
+## Status operacional e endpoints
 
-- instância ou serviço de banco em cloud
-- usuários e permissões de acesso
-- variáveis e secrets de conexão
-- reproduzibilidade por ambiente (`homologacao` e `production`)
+| Verificação | Acesso |
+| --- | --- |
+| Estado da infraestrutura | `terraform output` |
+| Healthcheck | `pg_isready` |
+| Conexão | `psql "$DATABASE_URL"` |
+| Swagger da API | Não se aplica a este repositório |
+| Endpoint público | Não existe: banco não é exposto publicamente |
+
+O endpoint da API que utiliza este banco está documentado no repositório [PosTechFiap_Mecanica_app-k8s](../PosTechFiap_Mecanica_app-k8s/README.md).
+
+## Deploy e acesso
+
+### Deploy automatizado
+
+O [pipeline de CI/CD](.github/workflows/ci-cd.yml) executa `fmt`, `validate`, `plan` e `apply` conforme a branch e o ambiente. O endereço do banco é gerado pelo Terraform e deve ser consumido por secret/configuração da aplicação, nunca publicado neste README.
+
+### Deploy manual
+
+```bash
+cp terraform.tfvars.example terraform.tfvars
+terraform init
+terraform plan
+terraform apply
+terraform output
+```
+
+### Acesso ao banco
+
+```bash
+psql "$DATABASE_URL"
+```
+
+O acesso exige rede permitida e credenciais válidas. Não exponha a porta do PostgreSQL diretamente à internet.
+
+## CI/CD e configuração
+
+Secrets esperados: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` e `DB_PASSWORD`. O arquivo `terraform.tfvars` é local e não deve ser versionado.
+
+## Observabilidade
+
+Monitore conexões ativas, backlog, latência de queries, uso de disco, WAL, falhas de escrita e resultado do `pg_isready`. Esses sinais devem ser correlacionados aos dashboards da API e das ordens de serviço no Datadog.
 
 ## Estrutura do repositório
 
 ```text
-repo-db-infra/
-├── .github/
-│   └── workflows/
-│       └── ci-cd.yml
-├── README.md
-├── database.tf
-├── terraform.tfvars.example
-├── variables.tf
-└── .gitignore
+database.tf                Recursos do banco
+variables.tf               Variáveis Terraform
+terraform.tfvars.example   Exemplo de configuração
+.github/workflows/         Pipeline de validação e deploy
 ```
 
-## Fluxo recomendado
+## Segurança e governança
 
-```text
-feature/* -> PR -> homologacao -> deploy automático
-feature/* -> PR -> main -> deploy automático em produção
-```
-
-## Branches
-
-- `homologacao`
-- `main`
-
-## CI/CD
-
-O workflow deste repositório executa:
-
-1. validação do Terraform
-2. `terraform fmt`
-3. `terraform validate`
-4. `terraform plan` em pull request
-5. `terraform apply` em homologação e produção
-
-## Secrets obrigatórios
-
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-- `AWS_REGION`
-- `DB_PASSWORD`
-
-## Como usar
-
-```bash
-cp terraform.tfvars.example terraform.tfvars
-# ajustar dados de conexão e senha
-terraform init
-terraform plan
-terraform apply
-```
-
-## Observações
-
-- não versionar senhas no código
-- manter a infraestrutura isolada da aplicação principal
-- o banco deve ser provisionado antes do deploy da aplicação que depende de conexão
-
-## Regras de proteção
-
-- commits diretos bloqueados
-- merge somente via Pull Request
-- status checks obrigatórios
-- revisão mínima exigida
-- bloqueio de force push
-- bloqueio de exclusão da branch
+- credenciais somente em secrets e variáveis protegidas;
+- aplicar menor privilégio para usuários do banco;
+- revisar o `terraform plan` antes de qualquer apply;
+- `main` protegida com Pull Request e checks obrigatórios.
