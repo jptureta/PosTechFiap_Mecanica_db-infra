@@ -1,92 +1,76 @@
-# Oficina Mecânica | Infraestrutura do banco
+# Oficina Mecânica | Infraestrutura do Banco de Dados (AWS RDS)
 
-Infraestrutura Terraform responsável pelo PostgreSQL utilizado pela aplicação Oficina Mecânica.
+Infraestrutura Terraform responsável pelo provisionamento do banco de dados gerenciado **AWS RDS PostgreSQL 16** utilizado pela aplicação Oficina Mecânica.
 
-## Visão geral
+## Visão Geral
 
 | Item | Informação |
 | --- | --- |
-| Responsabilidade | Provisionamento, acesso e governança do PostgreSQL |
+| Responsabilidade | Provisionamento, acesso e governança do AWS RDS PostgreSQL |
 | IaC | Terraform |
-| Plataforma | AWS |
+| Plataforma | AWS RDS (Engine PostgreSQL 16) |
 | Ambientes | `homologacao` e `production` |
 | Pipeline | [GitHub Actions](.github/workflows/ci-cd.yml) |
-| Estado operacional | Operacional quando o Terraform apply concluir e o banco aceitar conexões |
+| Estado operacional | Operacional quando a instância RDS estiver `Available` |
 
-## Arquitetura geral
+## Arquitetura Geral
 
 ```mermaid
 flowchart LR
-    Pipeline[GitHub Actions / Terraform] --> DB[(PostgreSQL)]
-    DB --> Access[Usuários, permissões e secrets]
-    App[Aplicação Kubernetes] -->|DATABASE_URL| DB
-    DB --> Monitor[Datadog PostgreSQL monitor]
+    Pipeline[GitHub Actions / Terraform] --> RDS[(AWS RDS PostgreSQL 16)]
+    RDS --> SG[Security Group / Subnet Group Multi-AZ]
+    EKS[AWS EKS App] -->|db_instance_endpoint| RDS
+    Lambda[AWS Lambda Auth] -->|db_instance_endpoint| RDS
+    RDS --> CloudWatch[AWS CloudWatch Logs & Metrics]
 ```
 
-## Stack e componentes
+## Stack e Componentes
 
-- Terraform 1.8.5
-- AWS
-- PostgreSQL
-- GitHub Actions
-- Datadog para disponibilidade, conexões, latência e espaço
+- Terraform >= 1.5.0
+- Provider `hashicorp/aws ~> 5.0`
+- AWS RDS PostgreSQL 16 (`aws_db_instance`)
+- DB Subnet Group multi-AZ (`aws_db_subnet_group`)
+- Security Group dedicado (`aws_security_group`)
+- Parameter Group customizado (`aws_db_parameter_group`)
+- Storage Auto Scaling (gp3 de 20 GiB a 100 GiB)
 
-## Status operacional e endpoints
+## Deploy e Acesso
 
-| Verificação | Acesso |
-| --- | --- |
-| Estado da infraestrutura | `terraform output` |
-| Healthcheck | `pg_isready` |
-| Conexão | `psql "$DATABASE_URL"` |
-| Swagger da API | Não se aplica a este repositório |
-| Endpoint público | Não existe: banco não é exposto publicamente |
+### Deploy Automatizado
 
-O endpoint da API que utiliza este banco está documentado no repositório [PosTechFiap_Mecanica_app-k8s](../PosTechFiap_Mecanica_app-k8s/README.md).
+O pipeline de CI/CD executa `terraform fmt`, `terraform validate` e `terraform plan` em Pull Requests, e `terraform apply` automático nas branches de `homologacao` e `production`.
 
-## Deploy e acesso
-
-### Deploy automatizado
-
-O [pipeline de CI/CD](.github/workflows/ci-cd.yml) executa `fmt`, `validate`, `plan` e `apply` conforme a branch e o ambiente. O endereço do banco é gerado pelo Terraform e deve ser consumido por secret/configuração da aplicação, nunca publicado neste README.
-
-### Deploy manual
+### Deploy Manual
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
+# Edite terraform.tfvars com as credenciais desejadas
 terraform init
 terraform plan
 terraform apply
 terraform output
 ```
 
-### Acesso ao banco
+### Outputs Principais
 
-```bash
-psql "$DATABASE_URL"
-```
+Após o apply, os seguintes outputs estarão disponíveis:
+- `db_instance_address`: Hostname/DNS do banco RDS.
+- `db_instance_port`: Porta TCP (5432).
+- `db_instance_endpoint`: Host:porta concatenados.
+- `db_security_group_id`: ID do SG para autorizar regras de entrada no EKS/Lambda.
 
-O acesso exige rede permitida e credenciais válidas. Não exponha a porta do PostgreSQL diretamente à internet.
+## Integração com Lambda e Aplicação Kubernetes
 
-## CI/CD e configuração
+A Lambda de autenticação e a API FastAPI conectam-se diretamente ao RDS PostgreSQL utilizando o endpoint disponibilizado via AWS SSM Parameter Store ou Secret do Kubernetes.
 
-Secrets esperados: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` e `DB_PASSWORD`. O arquivo `terraform.tfvars` é local e não deve ser versionado.
+Credenciais configuradas no SSM:
+- `/oficina/db/host`: Hostname do RDS (`aws_db_instance.postgres.address`).
+- `/oficina/db/port`: `5432`.
+- `/oficina/db/name`: `oficina_db`.
+- `/oficina/db/user`: `oficina`.
+- `/oficina/db/password`: Senha master configurada via Terraform.
 
-## Observabilidade
+## Documentação Arquitetural Completa
 
-Monitore conexões ativas, backlog, latência de queries, uso de disco, WAL, falhas de escrita e resultado do `pg_isready`. Esses sinais devem ser correlacionados aos dashboards da API e das ordens de serviço no Datadog.
-
-## Estrutura do repositório
-
-```text
-database.tf                Recursos do banco
-variables.tf               Variáveis Terraform
-terraform.tfvars.example   Exemplo de configuração
-.github/workflows/         Pipeline de validação e deploy
-```
-
-## Segurança e governança
-
-- credenciais somente em secrets e variáveis protegidas;
-- aplicar menor privilégio para usuários do banco;
-- revisar o `terraform plan` antes de qualquer apply;
-- `main` protegida com Pull Request e checks obrigatórios.
+Para detalhes sobre o diagrama de sequência, modelo relacional (ER), RFCs e ADRs de arquitetura, consulte o documento consolidado:
+👉 [`docs/arquitetura.md` no repositório app-k8s](../PosTechFiap_Mecanica_app-k8s/docs/arquitetura.md).

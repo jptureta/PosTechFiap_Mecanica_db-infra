@@ -1,13 +1,19 @@
-variable "cluster_name" {
-  description = "Nome do cluster kind"
+variable "aws_region" {
+  description = "Região da AWS para provisionamento do RDS"
   type        = string
-  default     = "oficina-mecanica"
+  default     = "us-east-1"
 }
 
-variable "namespace" {
-  description = "Namespace Kubernetes onde a aplicação e o banco serão implantados"
+variable "vpc_id" {
+  description = "ID da VPC onde o RDS será alocado (se omitido, usará a default VPC)"
   type        = string
-  default     = "oficina"
+  default     = ""
+}
+
+variable "subnet_ids" {
+  description = "Lista de IDs de subnets para o DB Subnet Group (mínimo 2 em AZs distintas)"
+  type        = list(string)
+  default     = []
 }
 
 variable "db_name" {
@@ -17,7 +23,7 @@ variable "db_name" {
 }
 
 variable "db_user" {
-  description = "Usuário do banco de dados"
+  description = "Usuário master do banco de dados"
   type        = string
   default     = "oficina"
 }
@@ -28,8 +34,20 @@ variable "db_password" {
   sensitive   = true
 }
 
-variable "db_storage_size" {
-  description = "Tamanho do volume persistente do PostgreSQL"
+variable "db_instance_class" {
+  description = "Tipo de instância para o RDS PostgreSQL"
   type        = string
-  default     = "1Gi"
+  default     = "db.t4g.micro"
+}
+
+variable "db_allocated_storage" {
+  description = "Armazenamento inicial alocado em GiB"
+  type        = number
+  default     = 20
+}
+
+variable "db_max_allocated_storage" {
+  description = "Limite superior para autoscaling de armazenamento em GiB"
+  type        = number
+  default     = 100
 }

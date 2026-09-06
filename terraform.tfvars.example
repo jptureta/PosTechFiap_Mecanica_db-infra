@@ -1,9 +1,10 @@
 # Copie este arquivo para terraform.tfvars e preencha os valores.
 # O terraform.tfvars real NÃO deve ser commitado (está no .gitignore).
 
-cluster_name    = "oficina-mecanica"
-namespace       = "oficina"
-db_name         = "oficina_db"
-db_user         = "oficina"
-db_password     = "defina-uma-senha-forte-aqui"
-db_storage_size = "1Gi"
+aws_region               = "us-east-1"
+db_name                  = "oficina_db"
+db_user                  = "oficina"
+db_password              = "defina-uma-senha-forte-aqui"
+db_instance_class        = "db.t4g.micro"
+db_allocated_storage     = 20
+db_max_allocated_storage = 100

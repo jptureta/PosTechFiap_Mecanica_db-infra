@@ -1,159 +1,103 @@
 # ─────────────────────────────────────────────────────────────
-# Banco de dados PostgreSQL 16 provisionado dentro do cluster
-# Recursos: Namespace, Secret, StatefulSet (com volume
-# persistente) e Service.
+# Banco de Dados Gerenciado AWS RDS (PostgreSQL 16)
 # ─────────────────────────────────────────────────────────────
 
-resource "kubernetes_namespace" "oficina" {
-  metadata {
-    name = var.namespace
+data "aws_vpc" "default" {
+  count   = var.vpc_id == "" ? 1 : 0
+  default = true
+}
+
+data "aws_subnets" "default" {
+  count = length(var.subnet_ids) == 0 ? 1 : 0
+  filter {
+    name   = "vpc-id"
+    values = [local.effective_vpc_id]
   }
 }
 
-# Credenciais do banco — o valor da senha vem de variável Terraform
-# (nunca commitada; ver terraform.tfvars.example e o README).
-resource "kubernetes_secret" "db_credentials" {
-  metadata {
-    name      = "db-credentials"
-    namespace = kubernetes_namespace.oficina.metadata[0].name
-  }
-
-  # Consumido apenas pelo pod do Postgres. A aplicação usa o Secret
-  # oficina-secret (em /k8s) — DB_USER/DB_PASSWORD de lá devem bater com
-  # os valores definidos aqui (terraform.tfvars).
-  data = {
-    POSTGRES_DB       = var.db_name
-    POSTGRES_USER     = var.db_user
-    POSTGRES_PASSWORD = var.db_password
-  }
-
-  type = "Opaque"
+locals {
+  effective_vpc_id     = var.vpc_id != "" ? var.vpc_id : data.aws_vpc.default[0].id
+  effective_subnet_ids = length(var.subnet_ids) > 0 ? var.subnet_ids : data.aws_subnets.default[0].ids
 }
 
-# StatefulSet garante identidade estável e volume persistente por pod —
-# o padrão recomendado para bancos de dados em Kubernetes.
-resource "kubernetes_stateful_set" "postgres" {
-  metadata {
-    name      = "postgres"
-    namespace = kubernetes_namespace.oficina.metadata[0].name
-    labels = {
-      app = "postgres"
-    }
-  }
+# 1. DB Subnet Group (obrigatoriamente multi-AZ)
+resource "aws_db_subnet_group" "oficina" {
+  name        = "oficina-db-subnet-group"
+  description = "Subnet group para a instancia RDS PostgreSQL da Oficina Mecanica"
+  subnet_ids  = local.effective_subnet_ids
 
-  spec {
-    service_name = "db"
-    replicas     = 1
-
-    selector {
-      match_labels = {
-        app = "postgres"
-      }
-    }
-
-    template {
-      metadata {
-        labels = {
-          app = "postgres"
-        }
-      }
-
-      spec {
-        container {
-          name  = "postgres"
-          image = "postgres:16-alpine"
-
-          port {
-            container_port = 5432
-            name           = "postgres"
-          }
-
-          env_from {
-            secret_ref {
-              name = kubernetes_secret.db_credentials.metadata[0].name
-            }
-          }
-
-          # PGDATA em subdiretório evita conflito com lost+found do volume
-          env {
-            name  = "PGDATA"
-            value = "/var/lib/postgresql/data/pgdata"
-          }
-
-          volume_mount {
-            name       = "postgres-data"
-            mount_path = "/var/lib/postgresql/data"
-          }
-
-          resources {
-            requests = {
-              cpu    = "100m"
-              memory = "256Mi"
-            }
-            limits = {
-              cpu    = "500m"
-              memory = "512Mi"
-            }
-          }
-
-          readiness_probe {
-            exec {
-              command = ["pg_isready", "-U", var.db_user, "-d", var.db_name]
-            }
-            initial_delay_seconds = 5
-            period_seconds        = 10
-          }
-
-          liveness_probe {
-            exec {
-              command = ["pg_isready", "-U", var.db_user, "-d", var.db_name]
-            }
-            initial_delay_seconds = 30
-            period_seconds        = 15
-          }
-        }
-      }
-    }
-
-    volume_claim_template {
-      metadata {
-        name = "postgres-data"
-      }
-
-      spec {
-        access_modes = ["ReadWriteOnce"]
-
-        resources {
-          requests = {
-            storage = var.db_storage_size
-          }
-        }
-      }
-    }
+  tags = {
+    Name = "oficina-db-subnet-group"
   }
 }
 
-# Service interno chamado "db" — mesmo nome usado no ConfigMap da aplicação
-# (DB_HOST: "db"), então a API conecta sem nenhuma alteração nos manifestos.
-resource "kubernetes_service" "postgres" {
-  metadata {
-    name      = "db"
-    namespace = kubernetes_namespace.oficina.metadata[0].name
-    labels = {
-      app = "postgres"
-    }
+# 2. Security Group para acesso ao PostgreSQL
+resource "aws_security_group" "rds" {
+  name        = "oficina-rds-sg"
+  description = "Controle de acesso para o banco de dados RDS PostgreSQL"
+  vpc_id      = local.effective_vpc_id
+
+  ingress {
+    description = "Acesso PostgreSQL a partir da VPC / EKS / Lambdas"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
   }
 
-  spec {
-    selector = {
-      app = "postgres"
-    }
+  egress {
+    description = "Permitir saida irrestrita"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-    port {
-      port        = 5432
-      target_port = 5432
-    }
+  tags = {
+    Name = "oficina-rds-sg"
+  }
+}
 
-    type = "ClusterIP"
+# 3. Parameter Group para PostgreSQL 16
+resource "aws_db_parameter_group" "postgres16" {
+  name        = "oficina-postgres16-params"
+  family      = "postgres16"
+  description = "Parametros customizados para o PostgreSQL 16 da Oficina"
+
+  parameter {
+    name  = "client_encoding"
+    value = "UTF8"
+  }
+}
+
+# 4. Instância Gerenciada AWS RDS PostgreSQL
+resource "aws_db_instance" "postgres" {
+  identifier = "oficina-postgres-db"
+
+  engine         = "postgres"
+  engine_version = "16.3"
+  instance_class = var.db_instance_class
+
+  allocated_storage     = var.db_allocated_storage
+  max_allocated_storage = var.db_max_allocated_storage
+  storage_type          = "gp3"
+
+  db_name  = var.db_name
+  username = var.db_user
+  password = var.db_password
+
+  db_subnet_group_name   = aws_db_subnet_group.oficina.name
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  parameter_group_name   = aws_db_parameter_group.postgres16.name
+
+  publicly_accessible = false
+  skip_final_snapshot = true
+  deletion_protection = false
+
+  auto_minor_version_upgrade = true
+  backup_retention_period    = 7
+
+  tags = {
+    Name = "oficina-postgres-db"
   }
 }
