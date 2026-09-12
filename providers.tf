@@ -2,7 +2,7 @@ terraform {
   required_version = ">= 1.5.0"
 
   backend "s3" {
-    bucket  = "oficina-mecanica-terraform-state"
+    bucket  = "oficina-mecanica-terraform-state-970075114213"
     key     = "db-infra/terraform.tfstate"
     region  = "us-east-1"
     encrypt = true
